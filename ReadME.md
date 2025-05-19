@@ -16,10 +16,10 @@ torch == 2.5.1
 ```
 
 We provide the ml-1m example dataset and XSimGCL implementation code. To execute this code:
-
-1. First you need to disable reranking
-2. Train the rank model
-3. Output cf_candidates.json
-4. Download the model (Qwen2.5 7b instruct) to the ./rerank/model directory
-5. Train the Qwen model
-6. After the Qwen model training is complete, you can use LAGCL4Rec normally
+1. Because GitHub has file size restrictions, you first need to run ./dataset/ml-1m/merge_profiles.py to generate merged_profiles.json.
+2. First you need to disable reranking
+3. Train the rank model
+4. Output cf_candidates.json
+5. Download the model (Qwen2.5 7b instruct) to the ./rerank/model directory
+6. Train the Qwen model
+7. After the Qwen model training is complete, you can use LAGCL4Rec normally
