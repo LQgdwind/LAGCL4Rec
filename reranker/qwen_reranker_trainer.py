@@ -22,11 +22,11 @@ from transformers import (
 from transformers.trainer_utils import set_seed
 import deepspeed
 import random
-import gc  # 添加垃圾回收模块
+import gc  
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
-# 设置基本日志配置
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -36,36 +36,32 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# 固定随机种子以确保可重复性
+
 set_seed(42)
 
 def load_profiles(profile_path):
-    """加载用户和物品的个人资料"""
     logger.info(f"Loading profiles from {profile_path}...")
     with open(profile_path, 'r', encoding='utf-8') as f:
         profiles = json.load(f)
     
-    # 构建查找字典
+    
     user_profiles = {}
     for entry in profiles:
         user_id = entry.get('user_id')
         if not user_id:
             continue
         
-        # 存储用户档案
         user_profiles[user_id] = {
             'user_profile': entry.get('user_profile', {}),
             'positive_items': {},
             'negative_items': {}
         }
         
-        # 存储正面项目
         for item in entry.get('positive_items', []):
             item_id = item.get('item_id')
             if item_id:
                 user_profiles[user_id]['positive_items'][item_id] = item.get('item_profile', {})
         
-        # 存储负面项目
         for item in entry.get('negative_items', []):
             item_id = item.get('item_id')
             if item_id:
@@ -75,7 +71,6 @@ def load_profiles(profile_path):
     return user_profiles
 
 def load_test_data(test_file_path):
-    """加载测试数据作为标签/真实交互"""
     user_items = {}
     with open(test_file_path, 'r', encoding='utf-8') as f:
         for line in f:
@@ -90,18 +85,15 @@ def load_test_data(test_file_path):
     return user_items
 
 def load_cf_candidates(cf_candidates_path):
-    """加载协同过滤模型生成的候选项"""
     with open(cf_candidates_path, 'r', encoding='utf-8') as f:
         cf_candidates = json.load(f)
     print(f"从{cf_candidates_path}加载了{len(cf_candidates)}个用户的协同过滤候选项")
     return cf_candidates
 
 def get_item_details(item_id, user_profiles, user_id):
-    """获取物品的详细信息"""
     if user_id not in user_profiles:
         return f"Item {item_id}"
     
-    # 检查物品是否在用户喜欢或不喜欢的项目中
     positive_items = user_profiles[user_id].get('positive_items', {})
     negative_items = user_profiles[user_id].get('negative_items', {})
     
@@ -115,27 +107,13 @@ def get_item_details(item_id, user_profiles, user_id):
         item_profile = {}
         status = ""
     
-    # 获取物品描述
     summarization = item_profile.get('summarization', f"Item {item_id}")
     return f"Item {item_id} {status}: {summarization}"
 
 def construct_reranker_prompt(user_id, item_id, user_profiles):
-    """
-    构建训练阶段的提示模板，与推理阶段完全保持一致，包括思维链(Chain of Thought)
-    
-    Args:
-        user_id: 用户ID
-        item_id: 物品ID
-        user_profiles: 用户资料字典
-    
-    Returns:
-        为单个用户-物品对构建的提示，与推理阶段格式相同
-    """
-    # 创建提示
     prompt = "You are a Precision Reranking Engine.\n"
     prompt += "Your sole task is to reorder the provided list of candidates strictly and exclusively based on the user preferences detailed below.\n\n"
     
-    # 获取用户资料
     prompt += "USER INFORMATION\n"
     if user_id in user_profiles:
         profile_data = user_profiles[user_id].get('user_profile', {})
@@ -147,40 +125,34 @@ def construct_reranker_prompt(user_id, item_id, user_profiles):
     else:
         prompt += f"User Information: User {user_id}\n\n"
     
-    # 添加候选项
     prompt += "CANDIDATE ITEMS\n"
     prompt += f"Candidate Items List: {item_id}\n"
     prompt += f"Original Ranking: {item_id}\n\n"
     
-    # 添加用户交互历史
     prompt += "USER INTERACTION HISTORY\n"
     if user_id in user_profiles:
-        # 添加历史信息 - 用户喜欢的物品
         positive_items = user_profiles[user_id].get('positive_items', {})
         if positive_items:
             prompt += "Items the user previously liked (strong relevance signals):\n"
             for i, (pos_id, profile) in enumerate(list(positive_items.items())[:5]):
-                if pos_id != item_id:  # 避免重复当前物品
+                if pos_id != item_id:
                     summarization = profile.get('summarization', '')
                     if summarization:
                         prompt += f"Item {pos_id}: {summarization}\n"
             prompt += "\n"
         
-        # 添加历史信息 - 用户不喜欢的物品
         negative_items = user_profiles[user_id].get('negative_items', {})
         if negative_items:
             prompt += "Items the user previously disliked (negative signals):\n"
             for i, (neg_id, profile) in enumerate(list(negative_items.items())[:3]):
-                if neg_id != item_id:  # 避免重复当前物品
+                if neg_id != item_id:
                     summarization = profile.get('summarization', '')
                     if summarization:
                         prompt += f"Item {neg_id}: {summarization}\n"
             prompt += "\n"
     
-    # 添加候选物品详情
     prompt += "CANDIDATE ITEM DETAILS\n"
     
-    # 获取物品资料
     if user_id in user_profiles:
         positive_items = user_profiles[user_id].get('positive_items', {})
         negative_items = user_profiles[user_id].get('negative_items', {})
@@ -200,20 +172,17 @@ def construct_reranker_prompt(user_id, item_id, user_profiles):
     else:
         prompt += f"Item {item_id}\n\n"
     
-    # 添加排序推理过程
     prompt += "RANKING REASONING PROCESS\n"
     prompt += "Follow this reasoning process:\n"
     prompt += "Step 1: Prioritize items that closely match the user's historical preferences and explicit likes.\n"
     prompt += "Step 2: Demote items similar to those the user has historically disliked.\n"
     prompt += "Step 3: Make minimal adjustments to the original ranking, changing positions only when you have high confidence.\n\n"
     
-    # 添加排序指南
     prompt += "RANKING GUIDELINES\n"
     prompt += "1. Promote the most relevant items to top positions\n"
     prompt += "2. Make conservative adjustments - only move items when necessary\n"
     prompt += "3. The original ranking is usually correct - only adjust with clear evidence\n\n"
     
-    # 训练阶段特定指导
     prompt += "For this single-item evaluation:\n"
     prompt += "- If this item should be ranked highly based on user preferences, classify as relevant (1)\n"
     prompt += "- If this item should be ranked lower, classify as less relevant (0)\n"
@@ -221,9 +190,6 @@ def construct_reranker_prompt(user_id, item_id, user_profiles):
     return prompt
 
 def create_training_examples_batch(user_ids, profiles, test_data, cf_candidates, max_pos_items=3, max_candidates=20, batch_size=100):
-    """
-    批量创建训练样本，以减少内存使用
-    """
     examples = []
     total_users = len(user_ids)
     
@@ -238,24 +204,18 @@ def create_training_examples_batch(user_ids, profiles, test_data, cf_candidates,
             if not positive_items or not candidates:
                 continue
                 
-            # 为了减少内存使用，限制处理的正样本数量
-            for pos_item_id in positive_items[:max_pos_items]:  # 使用参数控制正样本数量
-                # 确保候选项列表不会太长，这可能导致内存问题
-                current_candidates = candidates[:max_candidates]  # 使用参数控制候选项数量
+            for pos_item_id in positive_items[:max_pos_items]:
+                current_candidates = candidates[:max_candidates]
                 
-                # 确保正样本在候选项中
                 if pos_item_id not in current_candidates:
                     current_candidates = [pos_item_id] + current_candidates[:max_candidates-1]
                 else:
                     current_candidates.remove(pos_item_id)
                     current_candidates = [pos_item_id] + current_candidates
                 
-                # 为每个物品创建训练样本，使用与llm_reranker.py相同的提示模板
                 for item_id in current_candidates:
-                    # 使用与推理时相同的提示模板
                     input_text = construct_reranker_prompt(user_id, item_id, profiles)
                     
-                    # 正样本的标签为1，负样本的标签为0
                     label = 1 if item_id == pos_item_id else 0
                     
                     batch_examples.append({
@@ -266,7 +226,6 @@ def create_training_examples_batch(user_ids, profiles, test_data, cf_candidates,
                     })
         
         examples.extend(batch_examples)
-        # 手动触发垃圾回收，释放内存
         batch_examples.clear()
         gc.collect()
         logger.info(f"已处理 {min(i + batch_size, total_users)}/{total_users} 用户，当前样本数: {len(examples)}")
@@ -275,12 +234,11 @@ def create_training_examples_batch(user_ids, profiles, test_data, cf_candidates,
     return examples
 
 def tokenize_function(examples, tokenizer):
-    """对训练样本进行标记化处理，使用单一输入文本字段"""
     inputs = tokenizer(
         examples["input_text"],
         padding="max_length",
         truncation=True,
-        max_length=128,  # 减少最大长度以降低内存使用
+        max_length=128,
         return_tensors="pt"
     )
     return {
@@ -290,96 +248,70 @@ def tokenize_function(examples, tokenizer):
     }
 
 def create_training_examples(profiles, test_data, cf_candidates, num_examples=None, max_pos_items=3, max_candidates=20):
-    """
-    创建训练样本
-    - profiles: 用户档案
-    - test_data: 真实交互数据（标签）
-    - cf_candidates: 协同过滤模型生成的候选项
-    - num_examples: 要使用的示例数量（用户数量）
-    - max_pos_items: 每个用户最多使用的正样本数量
-    - max_candidates: 每个正样本最多使用的候选项数量
-    """
-    # 找出同时存在于测试数据和协同过滤候选项中的用户
     common_users = set(test_data.keys()) & set(cf_candidates.keys())
     logger.info(f"在测试数据和协同过滤候选项中找到{len(common_users)}个共同用户")
     
-    # 对用户ID列表进行随机排序
     user_ids = list(common_users)
     random.shuffle(user_ids)
     
-    # 如果指定了样本数，则限制处理的用户数
     if num_examples is not None:
         max_users = min(num_examples, len(user_ids))
         user_ids = user_ids[:max_users]
     
-    # 使用批量处理方式创建训练样本
     return create_training_examples_batch(user_ids, profiles, test_data, cf_candidates, 
                                           max_pos_items=max_pos_items, 
                                           max_candidates=max_candidates, 
                                           batch_size=50)
 
 def train_model(args):
-    """训练模型主函数"""
-    # 加载数据
     logger.info("开始加载数据...")
     user_profiles = load_profiles(args.profile_path)
     cf_candidates = load_cf_candidates(args.cf_candidates_path)
     test_data = load_test_data(args.test_file_path)
     
-    # 创建训练示例
     logger.info("创建训练示例...")
     examples = create_training_examples(user_profiles, test_data, cf_candidates, 
                                       args.num_examples,
                                       max_pos_items=args.max_pos_items,
                                       max_candidates=args.max_candidates)
     
-    # 释放不再需要的数据
     del user_profiles
     del cf_candidates
     del test_data
     gc.collect()
     
-    # 加载tokenizer和模型
     logger.info(f"Loading Qwen2.5-7B model and tokenizer...")
     tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path, trust_remote_code=True)
     
-    # 配置特殊token
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "right"
     
-    # 加载模型 - 默认使用全参数微调
     logger.info("Loading model for full parameter fine-tuning...")
     
-    # 清理缓存
     torch.cuda.empty_cache()
     gc.collect()
     
-    # 获取当前GPU索引
     local_rank = args.local_rank if args.local_rank != -1 else 0
     
-    # 显式指定设备映射到当前设备
     device_map = {'': local_rank}
     
     model = AutoModelForSequenceClassification.from_pretrained(
         args.model_name_or_path,
         num_labels=2,
-        device_map=device_map,  # 使用正确的设备映射
+        device_map=device_map,
         use_cache=False,
         attn_implementation="sdpa",
         low_cpu_mem_usage=True
     )
     
-    # 打印可训练参数
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     total_params = sum(p.numel() for p in model.parameters())
     logger.info(f"Trainable parameters: {trainable_params} ({trainable_params/total_params:.2%} of {total_params} total parameters)")
     
-    # 准备数据集
     logger.info("准备数据集...")
     
-    # 减小Dataset的批次大小，以降低内存使用
-    chunk_size = 2000  # 减少每批次处理的示例数，以降低内存使用
-    tokenized_examples = []  # 存储所有标记化后的示例
+    chunk_size = 2000
+    tokenized_examples = []
     
     for i in range(0, len(examples), chunk_size):
         chunk = examples[i:i+chunk_size]
@@ -390,18 +322,15 @@ def train_model(args):
             "label": [ex["label"] for ex in chunk]
         })
         
-        # 对数据集进行标记化处理
         tokenized_chunk = chunk_dataset.map(
             lambda examples: tokenize_function(examples, tokenizer),
             batched=True,
-            batch_size=64,  # 减小处理批次大小
+            batch_size=64,
             remove_columns=chunk_dataset.column_names
         )
         
-        # 将tokenized_chunk转换为列表并添加到tokenized_examples
         tokenized_examples.extend(tokenized_chunk)
         
-        # 手动清理内存
         del chunk
         del chunk_dataset
         del tokenized_chunk
@@ -409,59 +338,52 @@ def train_model(args):
         gc.collect()
         logger.info(f"已处理 {min(i + chunk_size, len(examples))}/{len(examples)} 个训练示例")
     
-    # 从列表创建一个新的Dataset
     tokenized_dataset = Dataset.from_list(tokenized_examples)
     
-    # 清理不再需要的数据
     del examples
     del tokenized_examples
     torch.cuda.empty_cache()
     gc.collect()
     
-    # 创建输出目录（如果不存在）
     os.makedirs(args.output_dir, exist_ok=True)
     
-    # 查看可用GPU
     n_gpus = torch.cuda.device_count()
     logger.info(f"可用GPU数量: {n_gpus}")
     
-    # 检查CUDA设备当前内存使用情况
     for i in range(n_gpus):
         gpu_name = torch.cuda.get_device_name(i)
         mem_allocated = torch.cuda.memory_allocated(i) / (1024**3)
         mem_reserved = torch.cuda.memory_reserved(i) / (1024**3)
         logger.info(f"GPU {i} ({gpu_name}) - 已分配内存: {mem_allocated:.2f} GB, 已保留内存: {mem_reserved:.2f} GB")
     
-    # 训练参数 - 针对全参数微调进行优化
     training_args = TrainingArguments(
         output_dir=args.output_dir,
         num_train_epochs=args.num_epochs,
-        per_device_train_batch_size=1,  # 极小批量大小以避免OOM
-        gradient_accumulation_steps=8,  # 减少梯度累积步数以加快训练
+        per_device_train_batch_size=1,
+        gradient_accumulation_steps=8,
         learning_rate=args.learning_rate,
         weight_decay=args.weight_decay,
         warmup_ratio=0.03,
         logging_dir=os.path.join(args.output_dir, "logs"),
         logging_steps=10,
         save_strategy="epoch",
-        save_total_limit=1,  # 减少保存的检查点数量
+        save_total_limit=1,
         fp16=False,
         bf16=True,
-        optim="adamw_torch",  # 使用普通优化器替代fused版本避免兼容性问题
+        optim="adamw_torch",
         remove_unused_columns=False,
         report_to="none",
-        deepspeed=None,  # 禁用DeepSpeed以解决'ds_grads_remaining'属性错误
+        deepspeed=None,
         local_rank=args.local_rank,
         gradient_checkpointing=True,
-        dataloader_num_workers=1,  # 使用单个工作线程加载数据
-        dataloader_pin_memory=False,  # 禁用pin_memory以减少GPU内存使用
+        dataloader_num_workers=1,
+        dataloader_pin_memory=False,
         ddp_find_unused_parameters=False,
-        max_grad_norm=1.0,  # 添加梯度裁剪以提高训练稳定性
-        group_by_length=True,  # 按长度分组，可能提高训练效率
+        max_grad_norm=1.0,
+        group_by_length=True,
         seed=42,
     )
     
-    # 创建Trainer，指定特定的数据整理器以减少内存使用
     trainer = Trainer(
         model=model,
         args=training_args,
@@ -469,11 +391,9 @@ def train_model(args):
         data_collator=default_data_collator,
     )
     
-    # 训练模型
     logger.info("Starting training...")
     trainer.train()
     
-    # 保存模型
     logger.info(f"Saving model to {args.output_dir}")
     trainer.save_model(args.output_dir)
     tokenizer.save_pretrained(args.output_dir)
